@@ -1,9 +1,9 @@
-import { PureComponent, Children } from 'react';
+import React, { PureComponent, Children } from 'react';
 import PropTypes from 'prop-types';
 import isFunction from 'lodash/isFunction';
 
 // eslint-disable-next-line
-import { unstable_renderPortal, unstable_unrenderPortal } from './PurePortal';
+import PurePortal from './PurePortal';
 
 import {
   getNodeFromSelector,
@@ -54,34 +54,19 @@ export default class LayeredPortal extends PureComponent {
   // DOM node, the parent node of portal content
   parentNode = null;
 
-  // openPortal和closePortal之所以不暴露出去是因为这两个API的调用容易出BUG，有操作是异步的。
-  componentDidMount() {
-    this.renderLayer();
-  }
+  state = {
+    key: 0,
+  };
 
-  componentWillReceiveProps(nextProps) {
+  static getDerivedStateFromProps(props, state) {
     // 如果selector变了的话，删除再重新打开
-    const { selector } = this.props;
-    if (selector !== nextProps.selector) {
-      // 真正的工作是在componentDidUpdate里做的
-      this.pendingDestroy = true;
+    if (state.prevSelector !== props.selector) {
+      return {
+        prevSelector: props.selector,
+        key: ++state.key,
+      };
     }
-  }
-
-  componentDidUpdate() {
-    if (this.pendingDestroy) {
-      // unrenderLayer是异步的（原因看unstable_unrenderPortal的代码），所以用callback的形式调用renderLayer
-      this.unrenderLayer.call(this, () => {
-        this.pendingDestroy = false;
-        this.renderLayer.call(this);
-      });
-    } else {
-      this.renderLayer.call(this);
-    }
-  }
-
-  componentWillUnmount() {
-    this.unrenderLayer.call(this);
+    return state;
   }
 
   getLayer = () => this.layerNode;
@@ -103,6 +88,14 @@ export default class LayeredPortal extends PureComponent {
         !isDescendant(layerNode, event.target))
     ) {
       this.props.onClickAway(event);
+    }
+  };
+
+  onUmount = () => {
+    this.unrenderLayer();
+    const layerNode = this.layerNode;
+    if (layerNode) {
+      isFunction(this.props.onUnmount) && this.props.onUnmount();
     }
   };
 
@@ -152,28 +145,18 @@ export default class LayeredPortal extends PureComponent {
     onLayerReady && onLayerReady(this.layerNode);
   };
 
-  unrenderLayer = callback => {
+  unrenderLayer = () => {
     const layerNode = this.layerNode;
-    if (!layerNode) {
-      return;
-    }
     if (layerNode) {
       this.undecorateLayer(layerNode);
 
-      unstable_unrenderPortal.call(
-        this,
-        layerNode,
-        () => {
-          removeNodeFromDOMTree(layerNode);
+      removeNodeFromDOMTree(layerNode);
 
-          // Reset
-          this.layerNode = null;
-          this.parentNode = null;
+      // Reset
+      this.layerNode = null;
+      this.parentNode = null;
 
-          isFunction(callback) && callback();
-        },
-        this.props.onUnmount
-      );
+      isFunction(this.props.onUnmount) && this.props.onUnmount();
     }
   };
 
@@ -195,23 +178,25 @@ export default class LayeredPortal extends PureComponent {
 
       // customize the container, e.g. style, event listener
       this.decorateLayer(this.layerNode);
-
-      // Render the portal content to container node or parent node
-      const { children, render } = props;
-      const content = render ? render() : Children.only(children);
-
-      unstable_renderPortal.call(
-        this,
-        content,
-        this.layerNode,
-        this.props.onMount
-      );
-    } else {
-      this.unrenderLayer();
     }
   };
 
   render() {
-    return null;
+    this.renderLayer();
+
+    // Render the portal content to container node or parent node
+    const { children, render, visible } = this.props;
+    const content = render ? render() : Children.only(children);
+
+    return visible ? (
+      <PurePortal
+        key={this.state.key}
+        selector={this.layerNode}
+        onMount={this.props.onMount}
+        onUnmount={this.onUmount}
+      >
+        {content}
+      </PurePortal>
+    ) : null;
   }
 }
